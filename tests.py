@@ -1,3 +1,5 @@
+from collections import Counter
+
 from nose.tools import eq_, ok_
 import pysam
 
@@ -138,17 +140,78 @@ def test_GeneAlignmentFinder():
             self.end = end
             self.strand = strand
 
-    class Transcript(Region):
-        def __init__(self, ID, *args):
-            super(Transcript, self).__init__(self, *args)
+        def __repr__(self):
+            return 'Region({}, {}, {}, {})'.format(self.reference_ID, self.start, self.end, self.strand)
+
+    class Transcript(object):
+        def __init__(self, ID, start, end, strand, gene):
             self.ID = ID
+            self.start = start
+            self.end = end
+            self.strand = strand
+            self.gene = gene
 
-    # TODO reconcile gc.Alignment.reverse_strand with Region.strand
 
-    genes = []
-    transcripts = []
+    genes = [
+        Region('ref_1', 10, 30, '+'),
+        Region('ref_2', 10, 30, '+'),
+        Region('ref_2', 20, 30, '+'),
+        Region('ref_3', 20, 30, '-'),
+        Region('ref_3', 20, 30, '+'),
+    ]
 
-    alignments = []
+    transcripts = [
+        Transcript('transcript_1', 30, 40, '+', genes[0]),
+    ]
+
+    alignments = [
+        Region('ref_1', 10, 20, '+'),
+        Region('ref_2', 25, 40, '+'),
+
+        # start, end, and strand don't really matter for transcripts
+        Region('transcript_1', -1, -1, 'dont care'),
+
+        Region('ref_3', 25, 40, '-'),
+    ]
 
     finder = gc.GeneAlignmentFinder(genes, transcripts)
-    ok_(False)
+    res = finder(alignments)
+    res = list(res)
+
+    expected = [
+        gc.GeneAlignment(genes[0], alignments[0]),
+        gc.GeneAlignment(genes[1], alignments[1]),
+        gc.GeneAlignment(genes[2], alignments[1]),
+        gc.GeneAlignment(genes[0], alignments[2]),
+        gc.GeneAlignment(genes[3], alignments[3]),
+    ]
+
+    eq_(expected, res)
+
+
+def test_counts_genes():
+
+    class Alignment(object):
+        def __init__(self, read_ID):
+            self.read_ID = read_ID
+
+    class GeneAlignment(object):
+        def __init__(self, gene, read_ID):
+            self.gene = gene
+            self.alignment = Alignment(read_ID)
+
+
+    gene_alignments = [
+        GeneAlignment('gene_1', 'read_1'),
+
+        # won't be counted because this read aligns to multiple genes
+        GeneAlignment('gene_1', 'read_2'),
+        GeneAlignment('gene_2', 'read_2'),
+
+        GeneAlignment('gene_2', 'read_3'),
+    ]
+
+    res = gc.count_genes(gene_alignments)
+    expected = Counter({'gene_1': 1, 'gene_2': 1})
+
+    eq_(expected, res)

@@ -1,4 +1,4 @@
-from collections import defaultdict, namedtuple
+from collections import Counter, defaultdict, namedtuple
 from itertools import groupby
 
 import pyximport; pyximport.install()
@@ -163,6 +163,8 @@ if __name__ == '__main__':
 
     rRNA_IDs = ['Ne_16s_1', 'Ne_23s_1', 'Nw_16s_1', 'Nw_23s_1']
     all_genes = list(neuro.genes) + list(nwino.genes)
+
+    # TODO neuro and nwino won't have transcripts
     all_transcripts = list(neuro.transcripts) + list(nwino.transcripts)
 
     # Filter alignments by mismatch
