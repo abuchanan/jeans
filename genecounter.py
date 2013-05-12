@@ -1,9 +1,16 @@
 from collections import Counter, defaultdict, namedtuple
 from itertools import groupby
+import logging
 
+import annotation
+import gff
+import pysam
 import pyximport; pyximport.install()
 
 import intervaltree
+
+
+logging.basicConfig(level=logging.INFO)
 
 
 def read_samfile(samfile, paired=False):
@@ -15,7 +22,9 @@ def read_samfile(samfile, paired=False):
 
     def read():
         for alignment in samfile:
-            reference_ID = samfile.getrname(alignment.tid)
+            reference_ID = ''
+            if alignment.tid != -1:
+                reference_ID = samfile.getrname(alignment.tid)
             start = alignment.pos + 1
             end = alignment.aend
             read_ID = alignment.qname
@@ -112,6 +121,7 @@ def GeneAlignmentFinder(genes, transcripts):
 
     def find(alignments):
         for alignment in alignments:
+
             transcript = transcripts_by_ID.get(alignment.reference_ID)
 
             # Did it align to a transcript?
@@ -120,7 +130,9 @@ def GeneAlignmentFinder(genes, transcripts):
 
             else:
                 # Find which gene(s) this alignment overlaps by position.
-                for gene in gene_index.find(alignment):
+                for gene in gene_index.find(alignment.reference_ID, alignment.strand,
+                                            alignment.start, alignment.end):
+
                     yield GeneAlignment(gene, alignment)
     return find
 
@@ -151,31 +163,78 @@ class RegionIndex(object):
         self.index = defaultdict(intervaltree.IntervalTree)
 
         for region in regions:
-            key = (region.reference_ID, region.strand)
+            key = (region.reference.name, region.strand)
             self.index[key].insert(region.start, region.end, region)
 
-    def find(self, region):
-        key = (region.reference_ID, region.strand)
-        return self.index[key].find(region.start, region.end)
+    def find(self, reference_name, start, end, strand):
+        key = (reference_name, strand)
+        return self.index[key].find(start, end)
+
+
+class Transcript(annotation.Transcript):
+    def __init__(self, ID):
+        super(Transcript, self).__init__()
+        self.ID = ID
+
+
+class AnnotationBuilder(annotation.AnnotationBuilder):
+
+    aliases = {
+        'reference': ['chromosome'],
+        'gene': ['pseudogene', 'transposable_element_gene'],
+        'transcript': ['mRNA', 'snRNA', 'rRNA', 'snoRNA', 'mRNA_TE_gene',
+                       'miRNA', 'tRNA', 'ncRNA', 'pseudogenic_transcript'],
+        'exon': ['pseudogenic_exon'],
+    }
+
+    def reference(self, record):
+        ref = annotation.Reference(record.seqid, record.end)
+        for child in self.handle(record.children):
+            child.reference = ref
+
+        return ref
+
+    def transcript(self, record):
+        t = Transcript(record.attributes['ID'])
+        for child in self.handle(record.children):
+            if isinstance(child, annotation.Exon):
+                child.transcript = t
+        return t
+
+
+build_annotation = AnnotationBuilder()
 
 
 if __name__ == '__main__':
 
-    rRNA_IDs = ['Ne_16s_1', 'Ne_23s_1', 'Nw_16s_1', 'Nw_23s_1']
-    all_genes = list(neuro.genes) + list(nwino.genes)
+    #samfile = pysam.Samfile('alignments/bowtie2_alignments.sam')
+    samfile = pysam.Samfile('test.sam', 'r')
+    alignments = read_samfile(samfile)
 
-    # TODO neuro and nwino won't have transcripts
-    all_transcripts = list(neuro.transcripts) + list(nwino.transcripts)
+    logging.info('Loading annotation')
+
+    with open('TAIR10_GFF3_genes.gff') as fh:
+        records = gff.Reader(fh)
+        logging.info('Building tree')
+        tree = gff.GFFTree(records)
+        logging.info('Transforming to annotation')
+        anno = build_annotation(tree.roots)
+
+    logging.info('Done loading annotation')
 
     # Filter alignments by mismatch
     MISMATCH_THRESHOLD = 2
-    (al for al in alignments if al.mismatches <= MISMATCH_THRESHOLD)
+    alignments = (al for al in alignments if al.mismatches <= MISMATCH_THRESHOLD)
 
     # Filter read alignments that aligned to rRNA
-    alignments = filter_read_alignments_by_reference(alignments, rRNA_IDs)
+    #alignments = filter_read_alignments_by_reference(alignments, rRNA_IDs)
 
     # Find which gene(s) each alignment corresponds to
-    gene_alignment_finder(all_genes, all_transcripts)
+    gene_alignment_finder = GeneAlignmentFinder(anno.genes, anno.transcripts)
     gene_alignments = gene_alignment_finder(alignments)
         
+    logging.info('Making gene counts')
+
     gene_counts = count_genes(gene_alignments)
+    for gene, counts in gene_counts.items():
+        print gene, counts
